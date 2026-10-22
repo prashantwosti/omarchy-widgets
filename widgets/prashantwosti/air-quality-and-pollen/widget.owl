@@ -16,7 +16,7 @@ widget "air quality and pollen" {
   let lon = num(area.longitude)
   // The US index there, Europe's everywhere else.
   let us = contains(["united states", "united states of america"], lower(trim(area.country[0].value)))
-  source air = http("https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${enc(lat)}&longitude=${enc(lon)}&current=european_aqi,us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,uv_index&hourly=european_aqi,us_aqi,alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen&forecast_days=2&timezone=auto&timeformat=unixtime") every 30m timeout 15s json status
+  source air = http("https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${enc(lat)}&longitude=${enc(lon)}&current=european_aqi,us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,uv_index&hourly=european_aqi,us_aqi&forecast_days=2&timezone=auto&timeformat=unixtime") every 30m timeout 15s json status
   // The first request goes out before the location is known; ask again once it is.
   when lat != null { refresh() }
   // And again when a new city moves it.
@@ -39,29 +39,16 @@ widget "air quality and pollen" {
   let start = max(count(hourly.time ?? [], t => t <= now) - 1, 0)
   let hours = take(drop(hourly.time ?? [], start), 24)
   let aqis = take(drop(get(hourly, index) ?? [], start), 24)
-  // Open-Meteo's pollen in grains/m³, rated none, low, moderate or high. Europe only: elsewhere it's null.
-  let kinds = [
-    {key: "birch", t: [1, 15, 90]}, {key: "alder", t: [1, 15, 90]}, {key: "olive", t: [1, 15, 90]},
-    {key: "grass", t: [1, 20, 50]}, {key: "mugwort", t: [1, 10, 50]}, {key: "ragweed", t: [1, 5, 20]}
-  ]
-  let omPollen = kinds.map(k => {
-    name: k.key,
-    values: take(drop(get(hourly, k.key + "_pollen") ?? [], start), 24),
-    peak: max(take(drop(get(hourly, k.key + "_pollen") ?? [], start), 24).filter(v => v != null)),
-    t: k.t
-  }).map(p => {name: p.name, values: p.values, peak: p.peak, level: p.peak == null ? 0 : count(p.t, x => p.peak >= x)})
   let pollenWords = ["none", "low", "moderate", "high"]
   // IQAir names its pollen types and prints a level word for today, with no numbers or hours.
   let iqHtml = iq.ok ? lower(iq.out) : ""
   let iqRows = ["tree", "grass", "weed", "ragweed"].map(k => {
     name: k,
     word: lower(trim((match(iqHtml, 'mb-0">' + k + '</p>.{0,120}?>([a-z ]+)<') ?? [])[0] ?? ""))
-  }).filter(p => p.word != "").map(p => {name: p.name, word: p.word, level: clamp(indexOf(["none", "low", "moderate", "high", "very high"], p.word), 0, 3), values: null, peak: null})
-  // IQAir where it answers (and outside Europe), Open-Meteo's forecast where it doesn't.
-  let iqUsed = len(iqRows) > 0
-  let pollen = iqUsed ? iqRows : omPollen.filter(p => p.peak != null)
+  }).filter(p => p.word != "").map(p => {name: p.name, level: clamp(indexOf(["none", "low", "moderate", "high", "very high"], p.word), 0, 3)})
+  let pollen = iqRows
   let hasPollen = len(pollen) > 0
-  let flying = pollen.filter(p => p.level > 0).sortBy(p => -(p.level * 1000 + (p.peak ?? 0)))
+  let flying = pollen.filter(p => p.level > 0).sortBy(p => -p.level)
   let pollenTints = [muted, green, yellow, red]
   // Precautions, switched on by the worst pollen level and by the air quality.
   let pmax = len(pollen) == 0 ? 0 : max(pollen.map(p => p.level))
@@ -219,7 +206,7 @@ widget "air quality and pollen" {
           for t in take(active, 7) key t.title { Text { text: t.icon; fontSize: 18; width: 26 } }
         }
       }
-      Section { t: iqUsed ? "pollen · today" : "pollen · next 24 h" }
+      Section { t: "pollen · today" }
       Column {
         gap: 3
         weight: 1
@@ -334,26 +321,15 @@ widget "air quality and pollen" {
         }
       }
 
-      Section { t: iqUsed ? "pollen · today, from iqair" : "pollen · next 24 hours" }
+      Section { t: "pollen · today, from iqair" }
       if !hasPollen {
-        Text { text: iqCity == "" ? "open-meteo only forecasts pollen in europe; set an iqair city below for the rest of the world" : "iqair has no pollen for that city"; style: small; color: muted }
+        Text { text: iqCity == "" ? "set an iqair city below: country/state/city, as its pollen page spells it" : "iqair has no pollen for that city"; style: small; color: muted }
       } else {
-        for p in pollen.sortBy(p => -(p.level * 1000 + (p.peak ?? 0))) key p.name {
-          Column {
-            gap: 2
-            PollenRow { p: p; size: 14 }
-            if p.values != null && p.level > 0 {
-              Row {
-                gap: 6
-                align: center
-                Sparkline { values: p.values.map(v => v ?? 0); min: 0; max: max(p.peak ?? 0, 1); color: pollenTints[p.level]; area: true; height: 24; weight: 1 }
-                Text { text: p.peak == null ? "" : "peak ${round(p.peak)}"; style: label; color: muted; width: 72; align: end }
-              }
-            }
-          }
+        for p in pollen.sortBy(p => -p.level) key p.name {
+          PollenRow { p: p; size: 14 }
         }
       }
-      Text { text: iqUsed ? "pollen: iqair · air quality: copernicus via open-meteo" : "data: copernicus atmosphere monitoring service via open-meteo"; style: label; color: muted }
+      Text { text: "pollen: iqair · air quality: copernicus via open-meteo"; style: label; color: muted }
 
       Section { t: "settings" }
       Input {
@@ -375,7 +351,7 @@ widget "air quality and pollen" {
       if iqCity != "" && iq.code != null && !iq.ok {
         Text { text: iq.code == 404 ? "no iqair pollen page at that country/state/city path" : iq.code == 429 ? "iqair is rate limiting; it will try again" : "iqair: error ${iq.code}"; style: small; color: orange }
       } else if iqCity == "" {
-        Text { text: "no iqair city set: pollen comes from open-meteo, which is europe only"; style: small; color: muted }
+        Text { text: "no iqair city set: no pollen until you set one"; style: small; color: muted }
       }
     }
   }
